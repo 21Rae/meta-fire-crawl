@@ -1,0 +1,6 @@
+{
+  "name": "Meta Ads Scraper & Analytics",
+  "description": "Scrape, analyze, and export Facebook & Instagram ad creatives, demographic reach, and extract emails from Link Caption destination links using Firecrawl.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
