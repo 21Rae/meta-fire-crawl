@@ -1,6 +1,7 @@
 export interface ScraperConfig {
   accessToken: string;
   firecrawlApiKey?: string;
+  autoDropSocialLinks?: boolean;
   searchType: 'page' | 'keyword';
   pageIds: string[];
   searchTerms: string;
@@ -21,7 +22,10 @@ export interface ExtractedEmailResult {
   originalLink: string;
   pageName?: string;
   adId?: string;
-  status: 'idle' | 'scraping' | 'completed' | 'failed';
+  status: 'idle' | 'scraping' | 'completed' | 'failed' | 'skipped';
+  isSocialLink?: boolean;
+  isAppStoreLink?: boolean;
+  exclusionType?: 'meta_social' | 'app_store' | 'none';
   emails: string[];
   source?: 'firecrawl' | 'simulated';
   title?: string;

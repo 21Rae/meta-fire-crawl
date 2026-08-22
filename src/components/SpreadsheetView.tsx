@@ -13,11 +13,14 @@ import {
   Sparkles,
   X,
   Flame,
-  Mail
+  Mail,
+  ShieldCheck,
+  Smartphone
 } from 'lucide-react';
 import { AdRecord } from '../types';
 import { HEADERS } from '../utils/constants';
 import { adToRow, exportToCsv, copySpreadsheetToClipboard } from '../utils/adProcessor';
+import { isMetaOrSocialLink, isAppStoreLink, isMetaSocialLink } from '../utils/urlFilters';
 
 interface SpreadsheetViewProps {
   sheetName: string;
@@ -39,6 +42,7 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   const [searchFilter, setSearchFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
   const [mediaFilter, setMediaFilter] = useState<'ALL' | 'VIDEO' | 'IMAGE' | 'MEME'>('ALL');
+  const [linkFilter, setLinkFilter] = useState<'ALL' | 'TARGET_LEADS' | 'EXCLUDED'>('ALL');
   const [sortField, setSortField] = useState<keyof AdRecord>('totalReach');
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedAd, setSelectedAd] = useState<AdRecord | null>(null);
@@ -55,6 +59,11 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
       if (statusFilter === 'ACTIVE' && ad.adStatus !== 'active') return false;
       if (statusFilter === 'INACTIVE' && ad.adStatus !== 'inactive') return false;
       if (mediaFilter !== 'ALL' && ad.mediaType !== mediaFilter) return false;
+
+      const link = (ad.linkCaption1 || '').trim();
+      const isExcluded = isMetaOrSocialLink(link);
+      if (linkFilter === 'TARGET_LEADS' && isExcluded) return false;
+      if (linkFilter === 'EXCLUDED' && !isExcluded) return false;
 
       if (searchFilter) {
         const query = searchFilter.toLowerCase();
@@ -166,6 +175,35 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
               }`}
             >
               Image Only
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-1 bg-white p-0.5 rounded border border-slate-200 text-xs">
+            <button
+              onClick={() => setLinkFilter('ALL')}
+              className={`px-2 py-0.5 rounded font-medium ${
+                linkFilter === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              All Links
+            </button>
+            <button
+              onClick={() => setLinkFilter('TARGET_LEADS')}
+              className={`px-2 py-0.5 rounded font-medium ${
+                linkFilter === 'TARGET_LEADS' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-50'
+              }`}
+              title="Show only ads linking to commercial websites (drops Social & App Stores)"
+            >
+              Target Leads
+            </button>
+            <button
+              onClick={() => setLinkFilter('EXCLUDED')}
+              className={`px-2 py-0.5 rounded font-medium ${
+                linkFilter === 'EXCLUDED' ? 'bg-emerald-600 text-white' : 'text-emerald-700 hover:bg-emerald-50'
+              }`}
+              title="Show only dropped Facebook, Instagram, Google Play & Apple Store ads"
+            >
+              Dropped Non-Leads
             </button>
           </div>
         </div>
@@ -347,9 +385,21 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
                           ) : isLinkCaption ? (
                             <div className="flex flex-col space-y-1">
                               <div className="flex items-center justify-between space-x-1">
-                                <span className="font-mono text-slate-700 truncate">
-                                  {String(val || '—')}
-                                </span>
+                                <div className="flex items-center space-x-1 truncate">
+                                  <span className="font-mono text-slate-700 truncate">
+                                    {String(val || '—')}
+                                  </span>
+                                  {isAppStoreLink(String(val || '')) && (
+                                    <span className="inline-flex items-center text-[9px] px-1 py-0.2 bg-purple-50 text-purple-700 border border-purple-200 rounded font-semibold shrink-0">
+                                      <Smartphone className="w-2.5 h-2.5 mr-0.5" /> App Store
+                                    </span>
+                                  )}
+                                  {isMetaSocialLink(String(val || '')) && (
+                                    <span className="inline-flex items-center text-[9px] px-1 py-0.2 bg-amber-50 text-amber-700 border border-amber-200 rounded font-semibold shrink-0">
+                                      FB/IG
+                                    </span>
+                                  )}
+                                </div>
                                 {String(val || '').trim() && onOpenFirecrawl && (
                                   <button
                                     onClick={(e) => {

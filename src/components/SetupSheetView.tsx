@@ -15,7 +15,8 @@ import {
   Info,
   CheckCircle2,
   Flame,
-  Mail
+  Mail,
+  Shield
 } from 'lucide-react';
 import { ScraperConfig } from '../types';
 import { ALL_COUNTRIES_LIST, DEFAULT_EU_COUNTRIES } from '../utils/constants';
@@ -331,6 +332,28 @@ export const SetupSheetView: React.FC<SetupSheetViewProps> = ({
                     </span>
                   )}
                 </div>
+              </div>
+
+              {/* Auto-drop Social & App Store Links switch */}
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                <div>
+                  <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Auto-drop Social & App Store Links</span>
+                  </label>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Skips Facebook, Instagram, Google Play Store, and Apple App Store URLs (e.g. <code className="text-amber-700 bg-amber-50 px-1 py-0.2 rounded font-mono text-[10px]">play.google.com</code>, <code className="text-amber-700 bg-amber-50 px-1 py-0.2 rounded font-mono text-[10px]">apps.apple.com</code>, <code className="text-amber-700 bg-amber-50 px-1 py-0.2 rounded font-mono text-[10px]">fb.me</code>) to conserve your Firecrawl tokens for real target lead websites.
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={config.autoDropSocialLinks !== false}
+                    onChange={e => onUpdateConfig({ autoDropSocialLinks: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-600"></div>
+                </label>
               </div>
             </div>
           </div>
