@@ -61,8 +61,8 @@ export const DEFAULT_CONFIG = {
   accessToken: '',
   firecrawlApiKey: '',
   autoDropSocialLinks: true,
-  searchType: 'page' as const,
-  pageIds: ['183869772601', '109727962402123'], // Default example Page IDs (e.g. Athletic Greens / Nike)
+  searchType: 'keyword' as const,
+  pageIds: [],
   searchTerms: 'protein powder',
   keywordSearchType: 'KEYWORD_UNORDERED' as const,
   timePeriod: 'last_30_days',

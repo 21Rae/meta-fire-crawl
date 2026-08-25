@@ -1,5 +1,5 @@
 export interface ScraperConfig {
-  accessToken: string;
+  accessToken?: string;
   firecrawlApiKey?: string;
   autoDropSocialLinks?: boolean;
   searchType: 'page' | 'keyword';

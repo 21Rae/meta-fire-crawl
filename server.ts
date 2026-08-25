@@ -13,6 +13,22 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Environment Configuration Status Endpoint (checks presence of server secrets safely)
+app.get('/api/config/status', (req, res) => {
+  const metaToken = (process.env.META_ACCESS_TOKEN || process.env.META_API_TOKEN || '').trim();
+  const firecrawlKey = (process.env.FIRECRAWL_API_KEY || '').trim();
+  const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
+
+  res.json({
+    hasMetaToken: Boolean(metaToken && metaToken !== 'PASTE YOUR META API TOKEN HERE'),
+    hasFirecrawlKey: Boolean(firecrawlKey),
+    hasGeminiKey: Boolean(geminiKey),
+    metaTokenConfigured: Boolean(metaToken && metaToken !== 'PASTE YOUR META API TOKEN HERE'),
+    firecrawlKeyConfigured: Boolean(firecrawlKey),
+    geminiKeyConfigured: Boolean(geminiKey)
+  });
+});
+
 // Meta Graph API Proxy to prevent CORS in browser
 app.post('/api/meta/scrape', async (req, res) => {
   try {
@@ -21,9 +37,12 @@ app.post('/api/meta/scrape', async (req, res) => {
       return res.status(400).json({ error: 'Missing config payload' });
     }
 
-    const accessToken = config.accessToken;
+    const accessToken = (process.env.META_ACCESS_TOKEN || process.env.META_API_TOKEN || config.accessToken || '').trim();
     if (!accessToken || accessToken === 'PASTE YOUR META API TOKEN HERE') {
-      return res.status(400).json({ error: 'Valid Meta API access token is required' });
+      return res.status(400).json({ 
+        error: 'Valid Meta API access token is required. Please configure META_ACCESS_TOKEN in your .env or Vercel environment variables.',
+        isTokenMissing: true 
+      });
     }
 
     const versions = ['v23.0', 'v22.0', 'v21.0'];
@@ -47,50 +66,126 @@ app.post('/api/meta/scrape', async (req, res) => {
       try {
         const base = `https://graph.facebook.com/${version}/ads_archive`;
         
-        // Attempt first with safe limit=25 (or 50), which avoids Meta Code 1 data size errors
-        const attemptFetch = async (useLeanFields: boolean, batchLimit: number) => {
-          const selectedFields = overrides?.fields 
-            ? overrides.fields.join(',')
-            : (useLeanFields ? standardFields.join(',') : fullFieldsWithBreakdown.join(','));
-
-          const mediaType = overrides?.mediaType || (config.mediaType && config.mediaType !== 'ALL' ? config.mediaType : null);
+        // Multi-strategy fetcher to handle different Meta API permission & parameter formats
+        const attemptFetchWithStrategy = async (strategy: number, batchLimit: number) => {
+          // Strategy 0: Full fields, user countries (or top 10 ISO-2)
+          // Strategy 1: Lean core fields, top 5 ISO countries (US, GB, DE, FR, CA)
+          // Strategy 2: Minimal essential fields, single country 'US'
+          // Strategy 3: Page ID direct string + political/all fallback
+          
+          let selectedFields: string;
+          if (overrides?.fields && overrides.fields.length > 0) {
+            selectedFields = overrides.fields.join(',');
+          } else if (strategy === 0) {
+            selectedFields = [
+              'id', 'page_name', 'ad_creative_link_captions', 'ad_snapshot_url',
+              'ad_creative_bodies', 'ad_creative_link_descriptions', 'ad_creative_link_titles',
+              'ad_creation_time', 'ad_delivery_start_time', 'ad_delivery_stop_time',
+              'languages', 'page_id', 'publisher_platforms',
+              'eu_total_reach', 'ad_active_status'
+            ].join(',');
+          } else {
+            selectedFields = [
+              'id', 'page_name', 'ad_creative_link_captions', 'ad_snapshot_url',
+              'ad_creative_bodies', 'ad_creation_time', 'ad_delivery_start_time',
+              'page_id', 'publisher_platforms', 'ad_active_status'
+            ].join(',');
+          }
 
           const params = new URLSearchParams();
+          
+          // 1. Mandatory ad_type for /ads_archive
+          params.append('ad_type', config.adType || 'ALL');
+
+          // 2. Active status
           params.append('ad_active_status', config.adActiveStatus || 'ALL');
-          params.append('ad_delivery_date_min', String(config.startDate));
-          params.append('ad_delivery_date_max', String(config.endDate));
+
+          // 3. Date bounds (YYYY-MM-DD)
+          if (strategy < 2) {
+            if (config.startDate && /^\d{4}-\d{2}-\d{2}$/.test(String(config.startDate))) {
+              params.append('ad_delivery_date_min', String(config.startDate));
+            }
+            if (config.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(config.endDate))) {
+              params.append('ad_delivery_date_max', String(config.endDate));
+            }
+          }
+
           params.append('fields', selectedFields);
           params.append('limit', String(batchLimit));
           params.append('access_token', accessToken);
 
-          if (mediaType) {
+          const mediaType = overrides?.mediaType || (config.mediaType && config.mediaType !== 'ALL' ? config.mediaType : null);
+          if (mediaType && strategy === 0) {
             params.append('media_type', mediaType);
           }
 
-          if (config.countries && config.countries.length > 0) {
-            params.append('ad_reached_countries', JSON.stringify(config.countries));
+          // 4. ad_reached_countries (CRITICAL: Meta rejects ['ALL'] for commercial ads (ad_type=ALL)!)
+          // Must provide actual ISO country codes (max 10).
+          let targetCountries = ['US', 'GB', 'DE', 'FR', 'IT', 'ES', 'NL', 'CA', 'AU', 'SE'];
+          if (Array.isArray(config.countries) && config.countries.length > 0) {
+            const clean = config.countries
+              .map((c: any) => String(c).trim().toUpperCase())
+              .filter((c: string) => c && c !== 'ALL' && /^[A-Z]{2}$/.test(c));
+            if (clean.length > 0) {
+              targetCountries = clean.slice(0, 10);
+            }
           }
-          if (config.languages && config.languages.length > 0) {
-            params.append('languages', JSON.stringify(config.languages));
+          if (strategy === 2) {
+            targetCountries = ['US', 'GB'];
           }
-          if (config.publisherPlatforms && config.publisherPlatforms.length > 0) {
+          params.append('ad_reached_countries', JSON.stringify(targetCountries));
+
+          // 5. languages (optional)
+          if (strategy === 0 && Array.isArray(config.languages) && config.languages.length > 0) {
+            const cleanLang = config.languages
+              .map((l: any) => String(l).trim().toLowerCase())
+              .filter((l: string) => l && /^[a-z]{2}$/.test(l));
+            if (cleanLang.length > 0) {
+              params.append('languages', JSON.stringify(cleanLang));
+            }
+          }
+
+          // 6. publisher_platforms (optional)
+          if (strategy === 0 && Array.isArray(config.publisherPlatforms) && config.publisherPlatforms.length > 0) {
             const valid = config.publisherPlatforms
-              .filter((p: string) => p && p.toLowerCase() !== 'all')
-              .map((p: string) => p.toUpperCase());
-            if (valid.length > 0) {
+              .map((p: any) => String(p).trim().toUpperCase())
+              .filter((p: string) => ['FACEBOOK', 'INSTAGRAM', 'AUDIENCE_NETWORK', 'MESSENGER', 'WHATSAPP', 'THREADS'].includes(p));
+            if (valid.length > 0 && valid.length < 6) {
               params.append('publisher_platforms', JSON.stringify(valid));
             }
           }
 
+          // 7. Search target (search_page_ids VS search_terms)
           if (config.searchType === 'page') {
-            params.append('search_type', 'PAGE');
-            const pageIdToUse = config.pageId || (config.pageIds && config.pageIds[0]);
-            if (pageIdToUse) {
-              params.append('search_page_ids', JSON.stringify([Number(pageIdToUse)]));
+            const rawPageId = config.pageId || (Array.isArray(config.pageIds) ? config.pageIds[0] : config.pageIds);
+            const pageIdStr = rawPageId ? String(rawPageId).trim().replace(/[^0-9]/g, '') : '';
+            
+            if (pageIdStr) {
+              if (strategy === 3) {
+                // Strategy 3 format: plain comma-delimited page id
+                params.append('search_page_ids', pageIdStr);
+              } else {
+                params.append('search_page_ids', JSON.stringify([pageIdStr]));
+              }
+            } else if (Array.isArray(config.pageIds) && config.pageIds.length > 0) {
+              const cleanedIds = config.pageIds
+                .map((id: any) => String(id).trim().replace(/[^0-9]/g, ''))
+                .filter(Boolean)
+                .slice(0, 10);
+              if (cleanedIds.length > 0) {
+                params.append('search_page_ids', JSON.stringify(cleanedIds));
+              }
             }
           } else {
-            params.append('search_type', config.keywordSearchType || 'KEYWORD_UNORDERED');
-            params.append('search_terms', config.searchTerms || '');
+            // Keyword search
+            const searchTerms = String(config.searchTerms || '').trim();
+            if (searchTerms) {
+              params.append('search_terms', searchTerms);
+              const matchType = config.keywordSearchType === 'KEYWORD_EXACT_PHRASE' 
+                ? 'KEYWORD_EXACT_PHRASE' 
+                : 'KEYWORD_UNORDERED';
+              params.append('search_type', matchType);
+            }
           }
 
           let allAds: any[] = [];
@@ -122,7 +217,10 @@ app.post('/api/meta/scrape', async (req, res) => {
                 throw err;
               }
 
-              throw new Error(`Meta API error: ${msg} (Code: ${code}${subcode ? `, Subcode: ${subcode}` : ''})`);
+              const err = new Error(`Meta API error: ${msg} (Code: ${code}${subcode ? `, Subcode: ${subcode}` : ''})`);
+              (err as any).code = code;
+              (err as any).subcode = subcode;
+              throw err;
             }
 
             if (data.data && Array.isArray(data.data)) {
@@ -136,17 +234,26 @@ app.post('/api/meta/scrape', async (req, res) => {
         };
 
         let adsResult: any[] = [];
-        try {
-          // Pass 1: Try with safe batch size 35 and full fields
-          adsResult = await attemptFetch(false, 35);
-        } catch (firstErr: any) {
-          if (firstErr.isDataSizeError || firstErr.code === 1) {
-            console.warn(`Meta API requested data reduction on ${version}. Retrying with lean fields & limit=25...`);
-            // Pass 2: Retry with lean fields and limit=25
-            adsResult = await attemptFetch(true, 25);
-          } else {
-            throw firstErr;
+        let executionError: any = null;
+
+        // Try strategies 0 through 3 if parameter subcode errors occur
+        for (let strat = 0; strat <= 3; strat++) {
+          try {
+            const batchSize = strat === 0 ? 30 : 20;
+            adsResult = await attemptFetchWithStrategy(strat, batchSize);
+            executionError = null;
+            break; // Success!
+          } catch (stratErr: any) {
+            executionError = stratErr;
+            if (stratErr.isTokenExpired || stratErr.code === 190) {
+              throw stratErr;
+            }
+            console.warn(`Version ${version} Strategy ${strat} failed (${stratErr.message}). Trying fallback strategy...`);
           }
+        }
+
+        if (executionError) {
+          throw executionError;
         }
 
         return res.json({ data: adsResult.slice(0, maxResults), version });
@@ -166,6 +273,38 @@ app.post('/api/meta/scrape', async (req, res) => {
     });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Internal server error during scrape' });
+  }
+});
+
+// Meta API Token Validation endpoint
+app.post('/api/meta/test-token', async (req, res) => {
+  try {
+    const accessToken = (req.body?.accessToken || process.env.META_ACCESS_TOKEN || process.env.META_API_TOKEN || '').trim();
+    if (!accessToken || accessToken === 'PASTE YOUR META API TOKEN HERE') {
+      return res.status(400).json({ 
+        valid: false, 
+        message: 'No Meta API token found in environment. Set META_ACCESS_TOKEN in your .env or Vercel environment variables.' 
+      });
+    }
+
+    const testUrl = `https://graph.facebook.com/v23.0/ads_archive?ad_type=ALL&ad_reached_countries=["US"]&limit=1&search_terms=test&fields=id,page_name&access_token=${encodeURIComponent(accessToken)}`;
+    const response = await fetch(testUrl);
+    const data = await response.json();
+
+    if (data.error) {
+      const code = data.error.code;
+      const subcode = data.error.error_subcode;
+      const msg = data.error.message || 'Meta API error';
+
+      if (code === 190) {
+        return res.json({ valid: false, message: `Access token expired or invalid (Code 190): ${msg}` });
+      }
+      return res.json({ valid: false, message: `Meta Error: ${msg} (Code ${code}${subcode ? `, Subcode ${subcode}` : ''})` });
+    }
+
+    return res.json({ valid: true, message: 'Meta Graph API token is valid and active with Ads Archive permissions!' });
+  } catch (err: any) {
+    return res.status(500).json({ valid: false, message: err.message || 'Failed to connect to Meta API' });
   }
 });
 
@@ -549,7 +688,10 @@ app.post('/api/firecrawl/test-key', async (req, res) => {
     const effectiveKey = (apiKey || process.env.FIRECRAWL_API_KEY || '').trim();
     
     if (!effectiveKey) {
-      return res.status(400).json({ valid: false, message: 'Please provide a Firecrawl API key' });
+      return res.status(400).json({ 
+        valid: false, 
+        message: 'No Firecrawl API key found. Set FIRECRAWL_API_KEY in your .env or Vercel environment variables.' 
+      });
     }
 
     const testRes = await fetch('https://api.firecrawl.dev/v1/scrape', {

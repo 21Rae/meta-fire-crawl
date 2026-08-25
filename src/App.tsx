@@ -53,94 +53,58 @@ export default function App() {
 
     // Calculate time range
     const range = calculateDateRange(config.timePeriod, config.startDate, config.endDate);
+    const cleanPageIds = (config.pageIds || []).map(id => String(id).trim().replace(/[^0-9]/g, '')).filter(Boolean);
     const effectiveConfig = {
       ...config,
+      pageIds: cleanPageIds.length > 0 ? cleanPageIds : ['183869772601'],
+      searchTerms: String(config.searchTerms || '').trim(),
       startDate: range.startDate,
       endDate: range.endDate
     };
 
     addLog(`Mode: ${mode} | Period: ${effectiveConfig.startDate} to ${effectiveConfig.endDate}`);
-    addLog(`Search type: ${effectiveConfig.searchType}`);
+    addLog(`Searching Meta Ads Library by keyword: "${effectiveConfig.searchTerms || 'protein powder'}" (${effectiveConfig.keywordSearchType})`);
 
     try {
       let fetchedAds: AdRecord[] = [];
-      const hasLiveToken = effectiveConfig.accessToken && effectiveConfig.accessToken !== 'PASTE YOUR META API TOKEN HERE';
+      addLog(`Connecting to Meta Ads scraping service...`);
 
-      if (hasLiveToken) {
-        addLog(`Attempting live Meta Graph API connection...`);
-        const isPageSearch = effectiveConfig.searchType === 'page' && effectiveConfig.pageIds.length > 0;
+      let tokenMissing = false;
 
-        if (isPageSearch) {
-          for (let i = 0; i < effectiveConfig.pageIds.length; i++) {
-            const pageId = effectiveConfig.pageIds[i];
-            addLog(`Fetching Page ID ${i + 1}/${effectiveConfig.pageIds.length}: ${pageId}`);
-            
-            const response = await fetch('/api/meta/scrape', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                config: { ...effectiveConfig, pageId },
-                overrides: { maxResults: effectiveConfig.maxResults }
-              })
-            });
+      const response = await fetch('/api/meta/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config: { ...effectiveConfig, searchType: 'keyword' },
+          overrides: { maxResults: effectiveConfig.maxResults }
+        })
+      });
 
-            const result = await response.json();
-            if (result.error) {
-              throw new Error(result.error);
-            }
+      const result = await response.json();
+      if (result.isTokenMissing) {
+        tokenMissing = true;
+      } else if (result.error) {
+        throw new Error(result.error);
+      } else if (result.data && result.data.length > 0) {
+        const videoIds = new Set<string>();
+        const processed = result.data.map((ad: any) => buildAdRecord(ad, effectiveConfig, videoIds));
+        fetchedAds = processed;
+        addLog(`Fetched ${processed.length} ads matching "${effectiveConfig.searchTerms}"`, 'success');
+      }
 
-            if (result.data && result.data.length > 0) {
-              const videoIds = new Set<string>();
-              result.data.forEach((ad: any) => {
-                if (ad.mediaType === 'VIDEO') videoIds.add(ad.id);
-              });
-
-              const processed = result.data.map((ad: any) => buildAdRecord(ad, effectiveConfig, videoIds));
-              fetchedAds = fetchedAds.concat(processed);
-              addLog(`Wrote ${processed.length} ads for Page ID: ${pageId}`, 'success');
-            }
-          }
-        } else {
-          addLog(`Fetching keyword search: "${effectiveConfig.searchTerms}"`);
-          const response = await fetch('/api/meta/scrape', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              config: effectiveConfig,
-              overrides: { maxResults: effectiveConfig.maxResults }
-            })
-          });
-
-          const result = await response.json();
-          if (result.error) throw new Error(result.error);
-
-          if (result.data && result.data.length > 0) {
-            const videoIds = new Set<string>();
-            const processed = result.data.map((ad: any) => buildAdRecord(ad, effectiveConfig, videoIds));
-            fetchedAds = processed;
-            addLog(`Fetched ${processed.length} ads for query "${effectiveConfig.searchTerms}"`, 'success');
-          }
-        }
-      } else {
+      if (tokenMissing) {
         // High-fidelity simulated scrape for demonstration
-        addLog(`[Demo/Simulation Mode] No Meta access token provided. Generating structured ads archive...`, 'warn');
+        addLog(`[Demo/Simulation Mode] META_ACCESS_TOKEN not detected in server environment.`, 'warn');
+        addLog(`💡 Add META_ACCESS_TOKEN to your .env or Vercel Environment Variables to query live Meta Graph API.`, 'info');
         await new Promise(r => setTimeout(r, 600));
 
-        if (effectiveConfig.searchType === 'page') {
-          effectiveConfig.pageIds.forEach((pId, idx) => {
-            addLog(`Simulating Page ID ${idx + 1}/${effectiveConfig.pageIds.length}: ${pId}`);
-          });
-        } else {
-          addLog(`Simulating keyword query: "${effectiveConfig.searchTerms}"`);
-        }
+        addLog(`Simulating keyword query in Meta Ads Library: "${effectiveConfig.searchTerms || 'protein powder'}"`);
 
         await new Promise(r => setTimeout(r, 800));
         addLog(`Analyzing age_country_gender_reach_breakdown & calculating DSA reach totals...`);
         
         // Generate dynamic customized mock data based on input
-        const brandName = effectiveConfig.searchType === 'page'
-          ? (effectiveConfig.pageIds[0] === '183869772601' ? 'AG1 by Athletic Greens' : effectiveConfig.pageIds[0] === '109727962402123' ? 'Nike Running' : `Brand (Page ${effectiveConfig.pageIds[0]})`)
-          : `Advertiser for "${effectiveConfig.searchTerms}"`;
+        const brandName = `Advertiser for "${effectiveConfig.searchTerms || 'protein powder'}"`;
 
         const newGeneratedAds: AdRecord[] = Array.from({ length: 6 }).map((_, i) => {
           const id = `${Math.floor(100000000000000 + Math.random() * 900000000000000)}`;

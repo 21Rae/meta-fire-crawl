@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Flame, 
   Mail, 
@@ -16,7 +16,9 @@ import {
   Zap, 
   Globe, 
   Shield,
-  Smartphone
+  Smartphone,
+  Lock,
+  Server
 } from 'lucide-react';
 import { AdRecord, ScraperConfig, ExtractedEmailResult } from '../types';
 import { 
@@ -40,11 +42,11 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
   onUpdateConfig,
   onUpdateAds
 }) => {
-  const [apiKey, setApiKey] = useState(config.firecrawlApiKey || '');
   const [prompt, setPrompt] = useState('extract all emails');
   const [autoDropSocial, setAutoDropSocial] = useState(config.autoDropSocialLinks !== false);
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [keyTestStatus, setKeyTestStatus] = useState<{ valid: boolean; message: string } | null>(null);
+  const [hasServerKey, setHasServerKey] = useState<boolean | null>(null);
   
   const [extractedMap, setExtractedMap] = useState<Record<string, ExtractedEmailResult>>(() => {
     const initial: Record<string, ExtractedEmailResult> = {};
@@ -71,7 +73,17 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
   const [filterMode, setFilterMode] = useState<'all' | 'target_leads' | 'dropped_excluded' | 'has_emails'>('all');
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
-  const [showConfig, setShowConfig] = useState(!config.firecrawlApiKey);
+  const [showConfig, setShowConfig] = useState(false);
+
+  // Check server environment status
+  useEffect(() => {
+    fetch('/api/config/status')
+      .then(res => res.json())
+      .then(data => {
+        setHasServerKey(Boolean(data.hasFirecrawlKey));
+      })
+      .catch(() => setHasServerKey(false));
+  }, []);
 
   // Extract unique links from Link Caption 1 and annotate social / app store links
   const uniqueLinksData = useMemo(() => {
@@ -131,40 +143,29 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
     onUpdateConfig({ autoDropSocialLinks: enabled });
   };
 
-  // Test Firecrawl API Key
+  // Test Firecrawl API Key on server
   const handleTestKey = async () => {
-    if (!apiKey.trim()) {
-      setKeyTestStatus({ valid: false, message: 'Please enter a Firecrawl API key' });
-      return;
-    }
-
     setIsTestingKey(true);
     setKeyTestStatus(null);
     try {
       const res = await fetch('/api/firecrawl/test-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: apiKey.trim() })
+        body: JSON.stringify({})
       });
       const data = await res.json();
       setKeyTestStatus({
         valid: data.valid,
-        message: data.message || (data.valid ? 'API Key is active!' : 'Invalid API Key')
+        message: data.message || (data.valid ? 'Firecrawl connection verified!' : 'Invalid API Key')
       });
       if (data.valid) {
-        onUpdateConfig({ firecrawlApiKey: apiKey.trim() });
+        setHasServerKey(true);
       }
     } catch (err: any) {
       setKeyTestStatus({ valid: false, message: err.message || 'Connection failed' });
     } finally {
       setIsTestingKey(false);
     }
-  };
-
-  // Save Firecrawl API Key
-  const handleSaveApiKey = () => {
-    onUpdateConfig({ firecrawlApiKey: apiKey.trim(), autoDropSocialLinks: autoDropSocial });
-    setKeyTestStatus({ valid: true, message: 'Saved successfully!' });
   };
 
   // Run extraction for a single URL
@@ -194,7 +195,6 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: link,
-          firecrawlApiKey: apiKey.trim() || config.firecrawlApiKey,
           prompt
         })
       });
@@ -228,6 +228,7 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
       };
     }
   };
+
 
   // Extract batch
   const handleExtractBatch = async (onlyMissing = false) => {
@@ -458,8 +459,8 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
             onClick={() => setShowConfig(!showConfig)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-semibold backdrop-blur transition-colors border border-white/20"
           >
-            <Key className="w-3.5 h-3.5" />
-            <span>{showConfig ? 'Hide API Config' : 'Configure Firecrawl Key'}</span>
+            <Server className="w-3.5 h-3.5" />
+            <span>{showConfig ? 'Hide Config & Prompt' : 'Secrets & Prompt'}</span>
           </button>
           
           <button
@@ -518,8 +519,8 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 text-white space-y-4 shadow-sm animate-in fade-in duration-200">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
             <div className="flex items-center space-x-2">
-              <Key className="w-4 h-4 text-amber-400" />
-              <h3 className="font-semibold text-sm">Firecrawl API Credentials & Optimization</h3>
+              <Lock className="w-4 h-4 text-amber-400" />
+              <h3 className="font-semibold text-sm">Server Secrets & Extraction Configuration</h3>
             </div>
             <a
               href="https://firecrawl.dev"
@@ -533,34 +534,36 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2 space-y-1.5">
-              <label className="text-xs font-medium text-slate-300">
-                Firecrawl API Key
-              </label>
+            <div className="md:col-span-2 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                  <span>Server Secret:</span>
+                  <code className="bg-slate-800 text-amber-300 px-1.5 py-0.5 rounded font-mono text-xs">
+                    FIRECRAWL_API_KEY
+                  </code>
+                </span>
+                {hasServerKey ? (
+                  <span className="bg-emerald-950 text-emerald-300 border border-emerald-800 font-medium text-[11px] px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Configured in Server Env
+                  </span>
+                ) : (
+                  <span className="bg-slate-800 text-slate-300 border border-slate-700 font-medium text-[11px] px-2 py-0.5 rounded-full">
+                    Using Simulated Fallback
+                  </span>
+                )}
+              </div>
+
               <div className="flex items-center space-x-2">
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                  placeholder="fc_xxxxxxxxxxxxxxxxxxxxxxxx"
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
                 <button
                   type="button"
                   onClick={handleTestKey}
-                  disabled={isTestingKey || !apiKey.trim()}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition-colors disabled:opacity-50"
+                  disabled={isTestingKey}
+                  className="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition-colors shadow-2xs disabled:opacity-50"
                 >
-                  {isTestingKey ? 'Verifying...' : 'Test Key'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveApiKey}
-                  className="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition-colors"
-                >
-                  Save
+                  {isTestingKey ? 'Verifying...' : '⚡ Test Firecrawl Secret'}
                 </button>
               </div>
+
               {keyTestStatus && (
                 <div className={`mt-1.5 text-xs flex items-center space-x-1.5 ${keyTestStatus.valid ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {keyTestStatus.valid ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
