@@ -17,6 +17,15 @@ export interface ScraperConfig {
   maxResults: number;
 }
 
+export interface SortedMailLead {
+  businessName: string;
+  email: string;
+  emailType: 'contact' | 'info';
+  domain: string;
+  originalLink: string;
+  adCount: number;
+}
+
 export interface ExtractedEmailResult {
   url: string;
   originalLink: string;

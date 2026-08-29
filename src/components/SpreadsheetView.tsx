@@ -21,6 +21,8 @@ import { AdRecord } from '../types';
 import { HEADERS } from '../utils/constants';
 import { adToRow, exportToCsv, copySpreadsheetToClipboard } from '../utils/adProcessor';
 import { isMetaOrSocialLink, isAppStoreLink, isMetaSocialLink } from '../utils/urlFilters';
+import { sortMail, exportSortedMailCsv } from '../utils/mailSorter';
+import { ListFilter } from 'lucide-react';
 
 interface SpreadsheetViewProps {
   sheetName: string;
@@ -52,6 +54,7 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
     val: ads[0]?.pageName || 'No Data'
   });
   const [copied, setCopied] = useState(false);
+  const sortedLeads = useMemo(() => sortMail(ads), [ads]);
 
   // Filtering & Sorting
   const filteredAds = useMemo(() => {
@@ -237,6 +240,17 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Layers className="w-3.5 h-3.5" />}
             <span className="hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
           </button>
+
+          {sortedLeads.length > 0 && (
+            <button
+              onClick={() => exportSortedMailCsv(sortedLeads, 'two-column')}
+              className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold shadow-2xs transition-all"
+              title="Export 2-column CSV with Business Name and Contact/Info Email"
+            >
+              <ListFilter className="w-3.5 h-3.5 text-amber-600" />
+              <span>Sort Mail CSV ({sortedLeads.length})</span>
+            </button>
+          )}
 
           {onOpenFirecrawl && (
             <button

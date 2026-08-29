@@ -259,12 +259,21 @@ app.post('/api/meta/scrape', async (req, res) => {
         return res.json({ data: adsResult.slice(0, maxResults), version });
       } catch (err: any) {
         lastError = err;
-        console.warn(`Version ${version} failed:`, err.message);
         if (err.isTokenExpired || err.code === 190) {
-          // No need to try older versions if the token itself is expired/invalid
+          // Token is expired or invalid - break immediately and return structured response
           break;
+        } else {
+          console.warn(`Version ${version} failed:`, err.message);
         }
       }
+    }
+
+    if (lastError?.isTokenExpired || lastError?.code === 190) {
+      return res.json({ 
+        data: [],
+        isTokenExpired: true,
+        error: lastError?.message || 'Meta API Access Token Expired or Invalid (Code 190). Falling back to simulation mode.'
+      });
     }
 
     return res.status(400).json({ 
@@ -281,9 +290,10 @@ app.post('/api/meta/test-token', async (req, res) => {
   try {
     const accessToken = (req.body?.accessToken || process.env.META_ACCESS_TOKEN || process.env.META_API_TOKEN || '').trim();
     if (!accessToken || accessToken === 'PASTE YOUR META API TOKEN HERE') {
-      return res.status(400).json({ 
+      return res.json({ 
         valid: false, 
-        message: 'No Meta API token found in environment. Set META_ACCESS_TOKEN in your .env or Vercel environment variables.' 
+        isTokenMissing: true,
+        message: 'No Meta API token found in environment. Set META_ACCESS_TOKEN in your .env or Settings.' 
       });
     }
 
@@ -297,14 +307,18 @@ app.post('/api/meta/test-token', async (req, res) => {
       const msg = data.error.message || 'Meta API error';
 
       if (code === 190) {
-        return res.json({ valid: false, message: `Access token expired or invalid (Code 190): ${msg}` });
+        return res.json({ 
+          valid: false, 
+          isTokenExpired: true,
+          message: `Access token expired or invalid (Code 190): ${msg}. You can generate a fresh token in Meta Developer Portal.` 
+        });
       }
       return res.json({ valid: false, message: `Meta Error: ${msg} (Code ${code}${subcode ? `, Subcode ${subcode}` : ''})` });
     }
 
     return res.json({ valid: true, message: 'Meta Graph API token is valid and active with Ads Archive permissions!' });
   } catch (err: any) {
-    return res.status(500).json({ valid: false, message: err.message || 'Failed to connect to Meta API' });
+    return res.json({ valid: false, message: err.message || 'Failed to connect to Meta API' });
   }
 });
 

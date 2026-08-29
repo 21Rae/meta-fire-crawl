@@ -18,9 +18,13 @@ import {
   Shield,
   Smartphone,
   Lock,
-  Server
+  Server,
+  Filter,
+  CheckCircle,
+  Building2,
+  ListFilter
 } from 'lucide-react';
-import { AdRecord, ScraperConfig, ExtractedEmailResult } from '../types';
+import { AdRecord, ScraperConfig, ExtractedEmailResult, SortedMailLead } from '../types';
 import { 
   isMetaOrSocialLink, 
   isMetaSocialLink, 
@@ -28,6 +32,11 @@ import {
   getCleanDomainOrUrl, 
   getLinkExclusionReason 
 } from '../utils/urlFilters';
+import { 
+  sortMail, 
+  exportSortedMailCsv, 
+  isContactOrInfoEmail 
+} from '../utils/mailSorter';
 
 interface FirecrawlEmailToolProps {
   ads: AdRecord[];
@@ -70,9 +79,10 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
   const [isExtracting, setIsExtracting] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, currentUrl: '' });
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterMode, setFilterMode] = useState<'all' | 'target_leads' | 'dropped_excluded' | 'has_emails'>('all');
+  const [filterMode, setFilterMode] = useState<'all' | 'target_leads' | 'sorted_mail' | 'has_emails' | 'dropped_excluded'>('all');
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [copiedSortedTsv, setCopiedSortedTsv] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
 
   // Check server environment status
@@ -136,6 +146,22 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
   const excludedLinks = useMemo(() => uniqueLinksData.filter(item => item.isExcluded), [uniqueLinksData]);
   const appStoreLinks = useMemo(() => uniqueLinksData.filter(item => item.isAppStore), [uniqueLinksData]);
   const metaSocialLinks = useMemo(() => uniqueLinksData.filter(item => item.isSocial), [uniqueLinksData]);
+
+  // Sort Mail: Only return emails that are 'contact' or 'info' and drop the rest
+  const sortedMailLeads = useMemo(() => {
+    return sortMail(ads, extractedMap);
+  }, [ads, extractedMap]);
+
+  // Filtered sorted mail leads based on search query
+  const filteredSortedMailLeads = useMemo(() => {
+    if (!searchQuery) return sortedMailLeads;
+    const q = searchQuery.toLowerCase();
+    return sortedMailLeads.filter(lead => 
+      lead.businessName.toLowerCase().includes(q) ||
+      lead.email.toLowerCase().includes(q) ||
+      lead.domain.toLowerCase().includes(q)
+    );
+  }, [sortedMailLeads, searchQuery]);
 
   // Toggle auto drop handler
   const handleToggleAutoDrop = (enabled: boolean) => {
@@ -229,10 +255,8 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
     }
   };
 
-
   // Extract batch
   const handleExtractBatch = async (onlyMissing = false) => {
-    // Determine active target items (excluding Social & App Stores if autoDropSocial is enabled)
     const baseList = autoDropSocial ? nonExcludedLinks : uniqueLinksData;
 
     const targets = baseList.filter(item => {
@@ -251,7 +275,6 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
     const newExtracted = { ...extractedMap };
     let updatedAds = [...ads];
 
-    // Mark skipped social and app store links if auto-drop is on
     if (autoDropSocial) {
       excludedLinks.forEach(item => {
         if (!newExtracted[item.link]) {
@@ -276,7 +299,6 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
       const item = targets[i];
       setProgress({ current: i + 1, total: targets.length, currentUrl: item.link });
 
-      // Mark scraping
       newExtracted[item.link] = {
         url: item.link,
         originalLink: item.link,
@@ -290,7 +312,6 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
       newExtracted[item.link] = result;
       setExtractedMap({ ...newExtracted });
 
-      // Persist to matching ads in the spreadsheet dataset
       if (result.emails.length > 0) {
         updatedAds = updatedAds.map(ad => {
           if ((ad.linkCaption1 || '').trim() === item.link) {
@@ -325,7 +346,6 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
       [item.link]: result
     }));
 
-    // Update ads array
     if (result.emails.length > 0) {
       const updated = ads.map(ad => {
         if ((ad.linkCaption1 || '').trim() === item.link) {
@@ -355,6 +375,15 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
     navigator.clipboard.writeText(emailList);
     setCopiedAll(true);
     setTimeout(() => setCopiedAll(false), 2500);
+  };
+
+  // Copy Sorted Leads as TSV (Business Name \t Email)
+  const handleCopySortedTsv = () => {
+    if (sortedMailLeads.length === 0) return;
+    const tsv = ['Business Name\tEmail', ...sortedMailLeads.map(l => `${l.businessName}\t${l.email}`)].join('\n');
+    navigator.clipboard.writeText(tsv);
+    setCopiedSortedTsv(true);
+    setTimeout(() => setCopiedSortedTsv(false), 2500);
   };
 
   // Export full CSV with lead emails
@@ -394,7 +423,7 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
     document.body.removeChild(link);
   };
 
-  // Filtered rows for the UI table
+  // Filtered rows for the general UI table
   const filteredLinks = useMemo(() => {
     return uniqueLinksData.filter(item => {
       const extracted = extractedMap[item.link];
@@ -442,25 +471,38 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-bold tracking-tight flex items-center gap-2">
-                <span>Firecrawl Email Extractor</span>
+                <span>Firecrawl Email & Lead Hunter</span>
                 <span className="bg-amber-400/30 text-amber-100 text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border border-amber-300/40 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3 text-amber-200" /> Auto-Drop Social & App Stores Active
                 </span>
               </h2>
               <p className="text-xs text-orange-100">
-                Crawls destination commercial domains in <span className="font-semibold underline">Link Caption 1</span> to extract emails, automatically dropping Facebook, Instagram, Google Play & Apple App Store URLs to conserve your tokens.
+                Crawls destination commercial domains in <span className="font-semibold underline">Link Caption 1</span> to extract emails, automatically dropping Facebook, Instagram, Google Play & Apple App Store URLs.
               </p>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center space-x-3 w-full md:w-auto justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+          {/* Quick Sort Mail Button */}
+          <button
+            onClick={() => setFilterMode('sorted_mail')}
+            className={`flex items-center space-x-1.5 px-3.5 py-2 rounded-lg text-xs font-bold shadow transition-all ${
+              filterMode === 'sorted_mail'
+                ? 'bg-amber-300 text-slate-950 ring-2 ring-white'
+                : 'bg-white text-orange-950 hover:bg-orange-50'
+            }`}
+          >
+            <ListFilter className="w-4 h-4 text-orange-600" />
+            <span>⚡ Sort Mail ({sortedMailLeads.length})</span>
+          </button>
+
           <button
             onClick={() => setShowConfig(!showConfig)}
             className="flex items-center space-x-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-semibold backdrop-blur transition-colors border border-white/20"
           >
             <Server className="w-3.5 h-3.5" />
-            <span>{showConfig ? 'Hide Config & Prompt' : 'Secrets & Prompt'}</span>
+            <span>{showConfig ? 'Hide Config' : 'Secrets & Prompt'}</span>
           </button>
           
           <button
@@ -469,7 +511,7 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
             className="flex items-center space-x-1.5 px-3.5 py-2 bg-white text-orange-900 hover:bg-orange-50 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-xs font-bold shadow transition-all"
           >
             {copiedAll ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-orange-600" />}
-            <span>{copiedAll ? 'Copied All!' : `Copy ${totalEmailsFound} Emails`}</span>
+            <span>{copiedAll ? 'Copied!' : `Copy All (${totalEmailsFound})`}</span>
           </button>
 
           <button
@@ -617,23 +659,29 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
 
         <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-2xs">
           <div>
-            <span className="text-xs font-semibold text-slate-500 block uppercase tracking-wider">Domains Scraped</span>
-            <div className="text-2xl font-bold text-indigo-700 mt-0.5">{linksWithEmailsCount} / {targetLeadsCount}</div>
-            <span className="text-[11px] text-indigo-600">Websites with emails</span>
-          </div>
-          <div className="w-10 h-10 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
-            <Zap className="w-5 h-5" />
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-2xs">
-          <div>
             <span className="text-xs font-semibold text-slate-500 block uppercase tracking-wider">Total Emails</span>
             <div className="text-2xl font-bold text-amber-600 mt-0.5">{totalEmailsFound}</div>
-            <span className="text-[11px] text-amber-600">Verified lead emails</span>
+            <span className="text-[11px] text-amber-600">{linksWithEmailsCount} domains with email</span>
           </div>
           <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
             <Mail className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Dedicated Sort Mail Metric Card */}
+        <div 
+          onClick={() => setFilterMode('sorted_mail')}
+          className="bg-gradient-to-br from-amber-500/10 to-orange-500/10 border-2 border-amber-400/80 hover:border-amber-500 rounded-xl p-4 flex items-center justify-between shadow-2xs cursor-pointer transition-all hover:scale-101"
+        >
+          <div>
+            <span className="text-xs font-bold text-amber-900 flex items-center gap-1 uppercase tracking-wider">
+              <span>⚡ Sort Mail Leads</span>
+            </span>
+            <div className="text-2xl font-black text-amber-700 mt-0.5">{sortedMailLeads.length}</div>
+            <span className="text-[11px] font-medium text-amber-800">Only contact & info emails</span>
+          </div>
+          <div className="w-10 h-10 rounded-lg bg-amber-500 text-white flex items-center justify-center shadow-sm">
+            <ListFilter className="w-5 h-5" />
           </div>
         </div>
       </div>
@@ -657,241 +705,435 @@ export const FirecrawlEmailTool: React.FC<FirecrawlEmailToolProps> = ({
         </div>
       )}
 
-      {/* Extraction Table & Controls */}
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        {/* Table Toolbar */}
-        <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/50">
-          <div className="flex items-center space-x-2 w-full sm:w-auto">
-            <button
-              onClick={() => handleExtractBatch(false)}
-              disabled={isExtracting || targetLeadsCount === 0}
-              className="flex items-center space-x-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-sm transition-all"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>{isExtracting ? 'Extracting...' : `Extract All (${targetLeadsCount} Target Leads)`}</span>
-            </button>
+      {/* SPECIAL SORT MAIL VIEW OR GENERAL TABLE */}
+      {filterMode === 'sorted_mail' ? (
+        /* ==================== SORT MAIL DEDICATED VIEW ==================== */
+        <div className="bg-white border border-amber-300/80 rounded-xl shadow-md overflow-hidden space-y-0">
+          {/* Top Sort Mail Callout Banner */}
+          <div className="bg-gradient-to-r from-amber-50 via-orange-50 to-amber-100/50 p-4 sm:p-5 border-b border-amber-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="bg-amber-600 text-white p-1.5 rounded-lg">
+                  <ListFilter className="w-4 h-4" />
+                </span>
+                <h3 className="font-bold text-sm sm:text-base text-slate-900">
+                  Sorted Mail Output: Contact & Info Leads
+                </h3>
+                <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-mono font-bold px-2 py-0.5 rounded-full">
+                  {sortedMailLeads.length} Clean Pairs
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 max-w-2xl">
+                Only returns emails matching <strong className="text-slate-800">contact@</strong> or <strong className="text-slate-800">info@</strong> prefixes and automatically drops all other addresses (support, personal, billing). Alphabetically sorted by <strong className="text-slate-800">Business Name</strong> for instant export.
+              </p>
+            </div>
 
-            <button
-              onClick={() => handleExtractBatch(true)}
-              disabled={isExtracting || targetLeadsCount === 0}
-              className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition-colors"
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-400" />
-              <span>Extract Missing Only</span>
-            </button>
+            {/* Export & Copy actions */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleCopySortedTsv}
+                disabled={sortedMailLeads.length === 0}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 rounded-lg text-xs font-semibold shadow-2xs transition-colors disabled:opacity-50"
+              >
+                {copiedSortedTsv ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-600" />}
+                <span>{copiedSortedTsv ? 'Copied TSV!' : 'Copy 2-Col Table'}</span>
+              </button>
+
+              <button
+                onClick={() => exportSortedMailCsv(sortedMailLeads, 'two-column')}
+                disabled={sortedMailLeads.length === 0}
+                className="flex items-center space-x-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-lg text-xs font-bold shadow transition-all disabled:opacity-50"
+              >
+                <Download className="w-4 h-4" />
+                <span>Export Clean CSV (Business Name & Email)</span>
+              </button>
+
+              <button
+                onClick={() => exportSortedMailCsv(sortedMailLeads, 'full')}
+                disabled={sortedMailLeads.length === 0}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-semibold shadow transition-all disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5 text-amber-400" />
+                <span>Export Full CSV</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-2 w-full sm:w-auto">
-            {/* Search */}
-            <div className="relative flex-1 sm:w-60">
+          {/* Search bar & filter pills within Sort Mail view */}
+          <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/70">
+            <div className="relative flex-1 w-full sm:max-w-md">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search links, brands, emails..."
+                placeholder="Filter by business name, email, or domain..."
                 className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
               />
             </div>
 
-            {/* Filter Toggle */}
-            <div className="flex items-center bg-slate-200/70 p-0.5 rounded-lg text-xs overflow-x-auto">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs text-slate-500">
+                Showing {filteredSortedMailLeads.length} of {sortedMailLeads.length} leads
+              </span>
               <button
                 onClick={() => setFilterMode('all')}
-                className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
-                  filterMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className="text-xs text-blue-600 hover:underline font-medium pl-2"
               >
-                All ({uniqueLinksData.length})
-              </button>
-              <button
-                onClick={() => setFilterMode('target_leads')}
-                className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
-                  filterMode === 'target_leads' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Target Leads ({targetLeadsCount})
-              </button>
-              <button
-                onClick={() => setFilterMode('has_emails')}
-                className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
-                  filterMode === 'has_emails' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Emails ({linksWithEmailsCount})
-              </button>
-              <button
-                onClick={() => setFilterMode('dropped_excluded')}
-                className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
-                  filterMode === 'dropped_excluded' ? 'bg-white text-emerald-800 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Dropped / Excluded ({droppedTotalCount})
+                Back to All Links
               </button>
             </div>
           </div>
-        </div>
 
-        {/* Table Content */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-100/75 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-                <th className="py-2.5 px-4 w-12 text-center">#</th>
-                <th className="py-2.5 px-4">Page Name</th>
-                <th className="py-2.5 px-4">Link Caption 1 (Target Domain)</th>
-                <th className="py-2.5 px-4">Extracted Emails</th>
-                <th className="py-2.5 px-4">Source / Status</th>
-                <th className="py-2.5 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs">
-              {filteredLinks.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
-                    <Mail className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-                    <p className="font-medium text-slate-600">No links match your filter</p>
-                    <p className="text-xs text-slate-400 mt-1">Make sure ads have been scraped with Link Caption 1 values.</p>
-                  </td>
+          {/* Sorted Mail Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-100 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                  <th className="py-3 px-4 w-12 text-center">#</th>
+                  <th className="py-3 px-4">Business Name (Page Name)</th>
+                  <th className="py-3 px-4">Sorted Clean Email (Contact / Info)</th>
+                  <th className="py-3 px-4">Email Type</th>
+                  <th className="py-3 px-4">Destination Domain</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
-              ) : (
-                filteredLinks.map((item, idx) => {
-                  const extracted = extractedMap[item.link];
-                  const emails = extracted?.emails || [];
-                  const isScrapingThis = extracted?.status === 'scraping';
-                  const isSkippedExcluded = item.isExcluded && (autoDropSocial || extracted?.status === 'skipped');
-                  const targetHref = item.link.startsWith('http') ? item.link : `https://${item.link}`;
-
-                  return (
-                    <tr key={item.link} className={`transition-colors ${isSkippedExcluded ? 'bg-slate-50/50 opacity-85' : 'hover:bg-slate-50/80'}`}>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {filteredSortedMailLeads.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-slate-400">
+                      <Mail className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                      <p className="font-medium text-slate-700">No contact or info emails match the criteria</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Run "Extract All" in Firecrawl or crawl more landing pages to find contact@ or info@ addresses.
+                      </p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredSortedMailLeads.map((lead, idx) => (
+                    <tr key={`${lead.businessName}-${lead.email}-${idx}`} className="hover:bg-amber-50/40 transition-colors">
                       <td className="py-3 px-4 text-center font-mono text-[11px] text-slate-400">
                         {idx + 1}
                       </td>
 
-                      <td className="py-3 px-4 font-semibold text-slate-900">
-                        {item.pageName || '—'}
+                      <td className="py-3 px-4 font-bold text-slate-900 flex items-center space-x-2">
+                        <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span>{lead.businessName}</span>
+                      </td>
+
+                      <td className="py-3 px-4 font-mono font-semibold text-slate-900">
+                        <span className="bg-amber-50 border border-amber-200 text-amber-950 px-2 py-1 rounded-md inline-flex items-center space-x-1.5">
+                          <Mail className="w-3 h-3 text-amber-600" />
+                          <span>{lead.email}</span>
+                        </span>
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="flex items-center space-x-1.5">
-                          <a
-                            href={targetHref}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-blue-600 hover:text-blue-800 hover:underline flex items-center space-x-1 font-mono text-[11px] max-w-xs truncate"
-                          >
-                            <span className="truncate">{item.link}</span>
-                            <ExternalLink className="w-3 h-3 shrink-0 ml-0.5" />
-                          </a>
-                          
-                          {item.isAppStore && (
-                            <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-100 text-purple-800 border border-purple-200">
-                              <Smartphone className="w-2.5 h-2.5 mr-0.5" /> App Store
-                            </span>
-                          )}
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                          lead.emailType === 'contact'
+                            ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                            : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                        }`}>
+                          {lead.emailType}
+                        </span>
+                      </td>
 
-                          {item.isSocial && (
-                            <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
-                              FB/IG Social
-                            </span>
+                      <td className="py-3 px-4 font-mono text-slate-600 text-[11px]">
+                        <div className="flex items-center space-x-1">
+                          <span>{lead.domain}</span>
+                          {lead.originalLink && (
+                            <a
+                              href={lead.originalLink.startsWith('http') ? lead.originalLink : `https://${lead.originalLink}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-500 hover:text-blue-700"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
                           )}
                         </div>
                       </td>
 
-                      <td className="py-3 px-4">
-                        {isScrapingThis ? (
-                          <div className="flex items-center space-x-1.5 text-amber-600 font-medium text-xs">
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Crawling with Firecrawl...</span>
-                          </div>
-                        ) : isSkippedExcluded ? (
-                          <span className="inline-flex items-center space-x-1 text-slate-500 font-mono text-[11px]">
-                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                            <span>
-                              {item.isAppStore ? 'Auto-dropped App Store (Saved token)' : 'Auto-dropped Social (Saved token)'}
-                            </span>
-                          </span>
-                        ) : emails.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5 max-w-md">
-                            {emails.map(email => (
-                              <button
-                                key={email}
-                                onClick={() => handleCopySingleEmail(email)}
-                                title="Click to copy email address"
-                                className="group flex items-center space-x-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 px-2 py-0.5 rounded-md font-mono text-[11px] transition-colors"
-                              >
-                                <span>{email}</span>
-                                {copiedEmail === email ? (
-                                  <Check className="w-3 h-3 text-emerald-600 shrink-0" />
-                                ) : (
-                                  <Copy className="w-2.5 h-2.5 text-amber-600 opacity-60 group-hover:opacity-100 shrink-0" />
-                                )}
-                              </button>
-                            ))}
-                          </div>
-                        ) : extracted?.status === 'completed' ? (
-                          <span className="text-slate-400 italic text-[11px]">No emails detected on page</span>
-                        ) : (
-                          <span className="text-slate-400 text-[11px]">— Not extracted yet —</span>
-                        )}
-                      </td>
-
-                      <td className="py-3 px-4">
-                        {isScrapingThis ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
-                            Scraping...
-                          </span>
-                        ) : isSkippedExcluded ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            🛡️ Dropped
-                          </span>
-                        ) : emails.length > 0 ? (
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                            extracted?.source === 'firecrawl' 
-                              ? 'bg-emerald-100 text-emerald-800' 
-                              : 'bg-blue-100 text-blue-800'
-                          }`}>
-                            {extracted?.source === 'firecrawl' ? '🔥 Firecrawl Live' : '⚡ Domain Lead'}
-                          </span>
-                        ) : extracted?.status === 'completed' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600">
-                            Completed (0)
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-400">
-                            Pending
-                          </span>
-                        )}
-                      </td>
-
                       <td className="py-3 px-4 text-right">
-                        {item.isExcluded && autoDropSocial ? (
-                          <button
-                            onClick={() => handleExtractOne(item)}
-                            disabled={isExtracting || isScrapingThis}
-                            className="px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
-                            title="Force crawl this link (uses tokens)"
-                          >
-                            Force Crawl
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleExtractOne(item)}
-                            disabled={isExtracting || isScrapingThis}
-                            className="px-2.5 py-1 text-[11px] font-semibold bg-slate-100 hover:bg-amber-100 hover:text-amber-900 text-slate-700 rounded transition-colors"
-                          >
-                            {emails.length > 0 ? 'Re-crawl' : 'Find Emails'}
-                          </button>
-                        )}
+                        <button
+                          onClick={() => handleCopySingleEmail(lead.email)}
+                          className="px-2.5 py-1 text-[11px] font-semibold bg-slate-100 hover:bg-amber-100 hover:text-amber-900 text-slate-700 rounded transition-colors inline-flex items-center space-x-1"
+                        >
+                          {copiedEmail === lead.email ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3 text-slate-500" />
+                              <span>Copy Email</span>
+                            </>
+                          )}
+                        </button>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      ) : (
+        /* ==================== GENERAL EXTRACTION TABLE ==================== */
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          {/* Table Toolbar */}
+          <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/50">
+            <div className="flex items-center space-x-2 w-full sm:w-auto">
+              <button
+                onClick={() => handleExtractBatch(false)}
+                disabled={isExtracting || targetLeadsCount === 0}
+                className="flex items-center space-x-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-sm transition-all"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>{isExtracting ? 'Extracting...' : `Extract All (${targetLeadsCount} Target Leads)`}</span>
+              </button>
+
+              <button
+                onClick={() => handleExtractBatch(true)}
+                disabled={isExtracting || targetLeadsCount === 0}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition-colors"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>Extract Missing Only</span>
+              </button>
+            </div>
+
+            <div className="flex items-center space-x-2 w-full sm:w-auto">
+              {/* Search */}
+              <div className="relative flex-1 sm:w-60">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="Search links, brands, emails..."
+                  className="w-full text-xs bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-2 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              {/* Filter Toggle */}
+              <div className="flex items-center bg-slate-200/70 p-0.5 rounded-lg text-xs overflow-x-auto">
+                <button
+                  onClick={() => setFilterMode('all')}
+                  className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
+                    filterMode === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  All ({uniqueLinksData.length})
+                </button>
+                <button
+                  onClick={() => setFilterMode('target_leads')}
+                  className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
+                    filterMode === 'target_leads' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Target Leads ({targetLeadsCount})
+                </button>
+                <button
+                  onClick={() => setFilterMode('has_emails')}
+                  className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
+                    filterMode === 'has_emails' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Emails ({linksWithEmailsCount})
+                </button>
+                <button
+                  onClick={() => setFilterMode('sorted_mail')}
+                  className={`px-2.5 py-1.5 rounded-md font-bold whitespace-nowrap transition-colors bg-amber-100 text-amber-950 border border-amber-300 hover:bg-amber-200`}
+                >
+                  ⚡ Sort Mail ({sortedMailLeads.length})
+                </button>
+                <button
+                  onClick={() => setFilterMode('dropped_excluded')}
+                  className={`px-2.5 py-1.5 rounded-md font-medium whitespace-nowrap transition-colors ${
+                    filterMode === 'dropped_excluded' ? 'bg-white text-emerald-800 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Dropped ({droppedTotalCount})
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Table Content */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-100/75 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                  <th className="py-2.5 px-4 w-12 text-center">#</th>
+                  <th className="py-2.5 px-4">Page Name</th>
+                  <th className="py-2.5 px-4">Link Caption 1 (Target Domain)</th>
+                  <th className="py-2.5 px-4">Extracted Emails</th>
+                  <th className="py-2.5 px-4">Source / Status</th>
+                  <th className="py-2.5 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {filteredLinks.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-slate-400">
+                      <Mail className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                      <p className="font-medium text-slate-600">No links match your filter</p>
+                      <p className="text-xs text-slate-400 mt-1">Make sure ads have been scraped with Link Caption 1 values.</p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredLinks.map((item, idx) => {
+                    const extracted = extractedMap[item.link];
+                    const emails = extracted?.emails || [];
+                    const isScrapingThis = extracted?.status === 'scraping';
+                    const isSkippedExcluded = item.isExcluded && (autoDropSocial || extracted?.status === 'skipped');
+                    const targetHref = item.link.startsWith('http') ? item.link : `https://${item.link}`;
+
+                    return (
+                      <tr key={item.link} className={`transition-colors ${isSkippedExcluded ? 'bg-slate-50/50 opacity-85' : 'hover:bg-slate-50/80'}`}>
+                        <td className="py-3 px-4 text-center font-mono text-[11px] text-slate-400">
+                          {idx + 1}
+                        </td>
+
+                        <td className="py-3 px-4 font-semibold text-slate-900">
+                          {item.pageName || '—'}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <div className="flex items-center space-x-1.5">
+                            <a
+                              href={targetHref}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:text-blue-800 hover:underline flex items-center space-x-1 font-mono text-[11px] max-w-xs truncate"
+                            >
+                              <span className="truncate">{item.link}</span>
+                              <ExternalLink className="w-3 h-3 shrink-0 ml-0.5" />
+                            </a>
+                            
+                            {item.isAppStore && (
+                              <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+                                <Smartphone className="w-2.5 h-2.5 mr-0.5" /> App Store
+                              </span>
+                            )}
+
+                            {item.isSocial && (
+                              <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                                FB/IG Social
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {isScrapingThis ? (
+                            <div className="flex items-center space-x-1.5 text-amber-600 font-medium text-xs">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Crawling with Firecrawl...</span>
+                            </div>
+                          ) : isSkippedExcluded ? (
+                            <span className="inline-flex items-center space-x-1 text-slate-500 font-mono text-[11px]">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span>
+                                {item.isAppStore ? 'Auto-dropped App Store (Saved token)' : 'Auto-dropped Social (Saved token)'}
+                              </span>
+                            </span>
+                          ) : emails.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5 max-w-md">
+                              {emails.map(email => {
+                                const check = isContactOrInfoEmail(email);
+                                return (
+                                  <button
+                                    key={email}
+                                    onClick={() => handleCopySingleEmail(email)}
+                                    title="Click to copy email address"
+                                    className={`group flex items-center space-x-1 border px-2 py-0.5 rounded-md font-mono text-[11px] transition-colors ${
+                                      check.isMatch
+                                        ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 font-semibold'
+                                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                                    }`}
+                                  >
+                                    <span>{email}</span>
+                                    {check.isMatch && (
+                                      <span className="text-[9px] bg-amber-200 text-amber-800 px-1 rounded uppercase font-bold">
+                                        {check.type}
+                                      </span>
+                                    )}
+                                    {copiedEmail === email ? (
+                                      <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    ) : (
+                                      <Copy className="w-2.5 h-2.5 text-slate-400 group-hover:opacity-100 shrink-0" />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : extracted?.status === 'completed' ? (
+                            <span className="text-slate-400 italic text-[11px]">No emails detected on page</span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">— Not extracted yet —</span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          {isScrapingThis ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
+                              Scraping...
+                            </span>
+                          ) : isSkippedExcluded ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              🛡️ Dropped
+                            </span>
+                          ) : emails.length > 0 ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                              extracted?.source === 'firecrawl' 
+                                ? 'bg-emerald-100 text-emerald-800' 
+                                : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {extracted?.source === 'firecrawl' ? '🔥 Firecrawl Live' : '⚡ Domain Lead'}
+                            </span>
+                          ) : extracted?.status === 'completed' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600">
+                              Completed (0)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-400">
+                              Pending
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-right">
+                          {item.isExcluded && autoDropSocial ? (
+                            <button
+                              onClick={() => handleExtractOne(item)}
+                              disabled={isExtracting || isScrapingThis}
+                              className="px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded transition-colors"
+                              title="Force crawl this link (uses tokens)"
+                            >
+                              Force Crawl
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleExtractOne(item)}
+                              disabled={isExtracting || isScrapingThis}
+                              className="px-2.5 py-1 text-[11px] font-semibold bg-slate-100 hover:bg-amber-100 hover:text-amber-900 text-slate-700 rounded transition-colors"
+                            >
+                              {emails.length > 0 ? 'Re-crawl' : 'Find Emails'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

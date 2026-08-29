@@ -83,6 +83,9 @@ export default function App() {
       const result = await response.json();
       if (result.isTokenMissing) {
         tokenMissing = true;
+      } else if (result.isTokenExpired || (result.error && (result.error.includes('expired') || result.error.includes('Code 190')))) {
+        addLog(`⚠️ [Meta Access Token Expired] ${result.error || 'Access token session has expired.'}`, 'warn');
+        tokenMissing = true;
       } else if (result.error) {
         throw new Error(result.error);
       } else if (result.data && result.data.length > 0) {
@@ -94,8 +97,8 @@ export default function App() {
 
       if (tokenMissing) {
         // High-fidelity simulated scrape for demonstration
-        addLog(`[Demo/Simulation Mode] META_ACCESS_TOKEN not detected in server environment.`, 'warn');
-        addLog(`💡 Add META_ACCESS_TOKEN to your .env or Vercel Environment Variables to query live Meta Graph API.`, 'info');
+        addLog(`[Simulation Mode] Generating realistic Meta Ad dataset for keyword search.`, 'info');
+        addLog(`💡 To use live Meta Graph API, refresh your META_ACCESS_TOKEN in .env or Settings.`, 'info');
         await new Promise(r => setTimeout(r, 600));
 
         addLog(`Simulating keyword query in Meta Ads Library: "${effectiveConfig.searchTerms || 'protein powder'}"`);
